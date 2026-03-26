@@ -1,0 +1,21 @@
+body {
+    font-family: Arial, sans-serif;
+    margin: 20px;
+}
+
+.controls {
+    margin-bottom: 10px;
+}
+
+#areaLabel {
+    margin-top: 5px;
+    font-weight: bold;
+}
+
+#map {
+    margin-top: 10px;
+}
+
+#chart_div {
+    margin-top: 20px;
+}
