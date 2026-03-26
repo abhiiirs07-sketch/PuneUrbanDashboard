@@ -7,6 +7,23 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 
+import ee
+import streamlit as st
+
+# Initialize Earth Engine using Streamlit secrets
+service_account = st.secrets["client_email"]
+private_key = st.secrets["private_key"]
+
+credentials = ee.ServiceAccountCredentials(
+    service_account,
+    key_data={
+        "client_email": service_account,
+        "private_key": private_key
+    }
+)
+
+ee.Initialize(credentials)
+
 # ---------------------------
 # Initialize Google Earth Engine
 # ---------------------------
