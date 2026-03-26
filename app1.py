@@ -1,175 +1,140 @@
-# app.py
 import streamlit as st
 import ee
-import geemap
-import pandas as pd
-import plotly.graph_objects as go
+import json
 import os
-import tempfile
-import streamlit.components.v1 as components
+import geemap.foliumap as geemap
+import pandas as pd
+import altair as alt
 
-# ---------------------------
-# 1️⃣ Initialize GEE with Service Account
-# ---------------------------
-SERVICE_ACCOUNT = "abhiiirs07@jarvice-ng.iam.gserviceaccount.com"
+st.set_page_config(layout="wide", page_title="Pune LULC Dashboard")
 
-# Load JSON key from environment variable (Streamlit Cloud secret)
-json_content = os.environ.get("EARTHENGINE_PRIVATE_KEY")
+# -----------------------------
+# 1️⃣ Initialize GEE with service account
+# -----------------------------
+service_account_info = json.loads(os.environ["EARTHENGINE_PRIVATE_KEY"])
+credentials = ee.ServiceAccountCredentials(
+    service_account_email=service_account_info["client_email"],
+    private_key=service_account_info["private_key"]
+)
+ee.Initialize(credentials)
 
-if json_content is None:
-    st.error(
-        "🌐 Earth Engine credentials not found.\n\n"
-        "Please set the secret 'EARTHENGINE_PRIVATE_KEY' in Streamlit Cloud or Hugging Face Spaces."
-    )
-    st.stop()
+# -----------------------------
+# 2️⃣ Define ROI (Pune district)
+# -----------------------------
+districts = ee.FeatureCollection("FAO/GAUL/2015/level2")
+roi = districts.filter(
+    ee.Filter.eq('ADM2_NAME', 'Pune')
+)
+Map_center = roi.geometry().centroid().coordinates().getInfo()[::-1]
 
-# Write JSON content to a temporary file
-with tempfile.NamedTemporaryFile(mode='w+', delete=False) as f:
-    f.write(json_content)
-    key_file_path = f.name
+# -----------------------------
+# 3️⃣ Load LULC assets
+# -----------------------------
+lulc_1990 = ee.Image("projects/jarvice-ng/assets/Pune_LULC_1990")
+lulc_2000 = ee.Image("projects/jarvice-ng/assets/Pune_LULC_2000")
+lulc_2010 = ee.Image("projects/jarvice-ng/assets/Pune_LULC_2010")
+lulc_2019 = ee.Image("projects/jarvice-ng/assets/Pune_LULC_2019")
+lulc_2022 = ee.Image("projects/jarvice-ng/assets/Pune_LULC_2022")
 
-# Initialize GEE
-try:
-    credentials = ee.ServiceAccountCredentials(SERVICE_ACCOUNT, key_file_path)
-    ee.Initialize(credentials)
-except Exception as e:
-    st.error(f"❌ Failed to initialize Google Earth Engine:\n{e}")
-    st.stop()
-
-# ---------------------------
-# 2️⃣ LULC Images and Classes
-# ---------------------------
-lulc_images = {
-    1990: ee.Image("projects/jarvice-ng/assets/Pune_LULC_1990"),
-    2000: ee.Image("projects/jarvice-ng/assets/Pune_LULC_2000"),
-    2010: ee.Image("projects/jarvice-ng/assets/Pune_LULC_2010"),
-    2019: ee.Image("projects/jarvice-ng/assets/Pune_LULC_20191"),
-    2025: ee.Image("projects/jarvice-ng/assets/Pune_LULC_20251")
+lulc_dict = {
+    "1990": lulc_1990,
+    "2000": lulc_2000,
+    "2010": lulc_2010,
+    "2019": lulc_2019,
+    "2022": lulc_2022
 }
 
-# LULC classes
-class_dict = {0: "Built-up", 1: "Vegetation", 2: "Water", 3: "Barren"}
-palette = {0: "red", 1: "green", 2: "blue", 3: "gray"}
+# -----------------------------
+# 4️⃣ LULC class palette
+# -----------------------------
+class_names = ["Water", "Built-up", "Barren", "Vegetation"]
+color_palette = {
+    "Water": "blue",
+    "Built-up": "red",
+    "Barren": "gray",
+    "Vegetation": "green"
+}
 
-# Pune boundary
-districts = ee.FeatureCollection("FAO/GAUL/2015/level2")
-pune = districts.filter(
-    ee.Filter.And(
-        ee.Filter.eq('ADM0_NAME', 'India'),
-        ee.Filter.eq('ADM1_NAME', 'Maharashtra'),
-        ee.Filter.eq('ADM2_NAME', 'Pune')
-    )
-)
+# -----------------------------
+# 5️⃣ Sidebar for year selection
+# -----------------------------
+st.sidebar.title("LULC Map Options")
+year1 = st.sidebar.selectbox("Select First Year", list(lulc_dict.keys()), index=0)
+year2 = st.sidebar.selectbox("Select Second Year", list(lulc_dict.keys()), index=3)
 
-pixel_area = ee.Image.pixelArea()
+# -----------------------------
+# 6️⃣ Create Map with draggable swipe
+# -----------------------------
+m = geemap.Map(center=Map_center, zoom=10)
+m.add_basemap("HYBRID")
 
-# ---------------------------
-# 3️⃣ Functions
-# ---------------------------
-def get_lulc_layer(year):
-    return lulc_images[year].clip(pune)
+lulc1 = lulc_dict[year1].clip(roi)
+lulc2 = lulc_dict[year2].clip(roi)
 
-def calculate_area(year):
-    img = lulc_images[year]
+vis_params = {"min": 1, "max": 4, "palette": ["blue", "red", "gray", "green"]}
+
+m.addLayer(lulc1, vis_params, f"LULC {year1}")
+m.addLayer(lulc2, vis_params, f"LULC {year2}")
+
+# Add a real swipe control
+m.addLayerControl()
+m.add_control(geemap.SwipeControl(left_layer=lulc1, right_layer=lulc2, orientation="horizontal"))
+
+st.subheader("LULC Map Comparison")
+m.to_streamlit(height=600)
+
+# -----------------------------
+# 7️⃣ Calculate area per class for all years
+# -----------------------------
+def calculate_area(image):
+    # area in km2 per class
+    pixel_area = ee.Image.pixelArea().divide(1e6)
     areas = {}
-    for cls in class_dict.keys():
-        mask = img.eq(cls)
+    for i, cls in enumerate(class_names, start=1):
+        mask = image.eq(i)
         area = mask.multiply(pixel_area).reduceRegion(
             reducer=ee.Reducer.sum(),
-            geometry=pune,
+            geometry=roi,
             scale=30,
             maxPixels=1e13
-        )
-        area_km2 = area.getInfo()[list(area.getInfo().keys())[0]] / 1e6
-        areas[class_dict[cls]] = area_km2
+        ).getInfo()
+        areas[cls] = area.get('constant', 0) if 'constant' in area else 0
     return areas
 
-def render_map(folium_map):
-    map_html = folium_map.to_html()
-    components.html(map_html, height=500)
+area_data = []
+for year, img in lulc_dict.items():
+    areas = calculate_area(img)
+    areas['Year'] = int(year)
+    area_data.append(areas)
 
-# ---------------------------
-# 4️⃣ Streamlit UI
-# ---------------------------
-st.set_page_config(page_title="Urbangrowth Development Dashboard", layout="wide")
-st.title("🏙️ Pune Urban Growth Dashboard")
+df_area = pd.DataFrame(area_data)
 
-# Sidebar
-st.sidebar.header("Settings")
-year = st.sidebar.selectbox("Select Year", [1990, 2000, 2010, 2019, 2025])
-compare_btn = st.sidebar.checkbox("Compare 1990 vs 2025 (Swipe Slider)")
+# -----------------------------
+# 8️⃣ Stacked area chart
+# -----------------------------
+st.subheader("LULC Area Trends (km²)")
+df_melt = df_area.melt(id_vars=["Year"], value_vars=class_names, var_name="Class", value_name="Area")
 
-# ---------------------------
-# 5️⃣ Display Map
-# ---------------------------
-st.subheader(f"LULC Map for {year}")
-m = geemap.Map(center=[18.52, 73.85], zoom=9)
-vis_params = {
-    "min": 0,
-    "max": len(class_dict) - 1,
-    "palette": [palette[k] for k in sorted(palette.keys())]
-}
-m.addLayer(get_lulc_layer(year), vis_params, f"LULC {year}")
-m.addLayer(pune, {}, "Boundary")
-render_map(m)
+chart = alt.Chart(df_melt).mark_area(opacity=0.6).encode(
+    x="Year:O",
+    y="Area:Q",
+    color=alt.Color("Class:N", scale=alt.Scale(domain=class_names,
+                                               range=[color_palette[cls] for cls in class_names])),
+    tooltip=["Year", "Class", "Area"]
+).interactive()
 
-# ---------------------------
-# 6️⃣ Legend
-# ---------------------------
-st.markdown("**Legend:**")
-cols = st.columns(len(class_dict))
-for i, cls in enumerate(class_dict.keys()):
-    with cols[i]:
-        st.markdown(
-            f"<div style='background-color:{palette[cls]};width:100%;height:25px;"
-            f"border:1px solid black'></div>",
-            unsafe_allow_html=True
-        )
-        st.markdown(f"**{class_dict[cls]}**", unsafe_allow_html=True)
+st.altair_chart(chart, use_container_width=True)
 
-# ---------------------------
-# 7️⃣ Area Table
-# ---------------------------
-areas = calculate_area(year)
-st.subheader(f"LULC Area for {year} (sq.km)")
-st.table(pd.DataFrame(list(areas.items()), columns=["Class", "Area (sq.km)"]))
+# -----------------------------
+# 9️⃣ Display area table
+# -----------------------------
+st.subheader("LULC Area Table (km²)")
+st.dataframe(df_area.style.format("{:.2f}"))
 
-# ---------------------------
-# 8️⃣ Stacked Area Chart
-# ---------------------------
-st.subheader("LULC Trends Over Time")
-years = [1990, 2000, 2010, 2019, 2025]
-lulc_areas_all = {cls: [calculate_area(y)[cls] for y in years] for cls in class_dict.values()}
-
-fig_area = go.Figure()
-for cls in class_dict.values():
-    fig_area.add_trace(
-        go.Scatter(
-            x=years,
-            y=lulc_areas_all[cls],
-            mode="lines",
-            stackgroup="one",
-            name=cls,
-            line=dict(width=0.5),
-            fillcolor=palette[[k for k, v in class_dict.items() if v == cls][0]]
-        )
-    )
-fig_area.update_layout(
-    title="LULC Area Trends Over Time",
-    xaxis_title="Year",
-    yaxis_title="Area (sq.km)"
-)
-st.plotly_chart(fig_area, use_container_width=True)
-
-# ---------------------------
-# 9️⃣ Swipe Comparison
-# ---------------------------
-if compare_btn:
-    st.subheader("Swipe Comparison: 1990 vs 2025")
-    layer1 = get_lulc_layer(1990)
-    layer2 = get_lulc_layer(2025)
-    m_swipe = geemap.Map(center=[18.52, 73.85], zoom=9)
-    m_swipe.addLayer(layer1, vis_params, "1990 LULC")
-    m_swipe.addLayer(layer2, vis_params, "2025 LULC")
-    m_swipe.addLayer(pune, {}, "Boundary")
-    m_swipe.to_streamlit(height=500, swipe=True)
+# -----------------------------
+# 10️⃣ Footer
+# -----------------------------
+st.markdown("""
+---
+**Developed by:** Abhishek | **Project:** Pune Urban LULC Dashboard
+""")
