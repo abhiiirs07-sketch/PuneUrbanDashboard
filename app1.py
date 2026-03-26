@@ -1,7 +1,7 @@
 # app.py
 import streamlit as st
 import ee
-import geemap.foliumap as geemap
+import geemap
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
