@@ -1,23 +1,27 @@
-import streamlit as st
-import ee
 import os
 import json
-import geemap
+import streamlit as st
+import ee
+import geemap.foliumap as geemap  # or geemap.eefolium
 
-# Read secret
-key_str = st.secrets["general"]["EARTHENGINE_PRIVATE_KEY"]
+# --- Initialize Earth Engine using the service account ---
+try:
+    # Load the service account JSON from Streamlit secrets
+    key_str = st.secrets["EARTHENGINE"]["PRIVATE_KEY"]
+    service_account_info = json.loads(key_str)
 
-# Convert escaped newlines to actual newlines
-key_str = key_str.replace("\\n", "\n")
+    # Authenticate using the service account info
+    credentials = ee.ServiceAccountCredentials(
+        service_account_info["client_email"], key_file=None, token_uri=service_account_info["token_uri"], private_key=service_account_info["private_key"]
+    )
+    ee.Initialize(credentials)
+except Exception as e:
+    st.error(f"Failed to initialize Earth Engine: {e}")
+    st.stop()
 
-# Parse JSON
-service_account_info = json.loads(key_str)
+st.title("Pune Urban Growth Dashboard")
 
-# Initialize credentials
-credentials = ee.ServiceAccountCredentials(
-    service_account_info["client_email"],
-    service_account_info["private_key"]
-)
-ee.Initialize(credentials)
-
-st.success("Earth Engine initialized successfully ✅")
+# --- Example map ---
+Map = geemap.Map(center=[18.5204, 73.8567], zoom=10)
+Map.add_basemap("HYBRID")
+st.components.v1.html(Map.to_html(), height=600)
